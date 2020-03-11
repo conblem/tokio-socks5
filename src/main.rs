@@ -1,12 +1,9 @@
 use tokio;
 use std::error::Error;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, copy, Error as IOError, ErrorKind};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
 use std::net::{SocketAddrV4, Ipv4Addr};
-use std::io::BufRead;
-use tokio::task::JoinHandle;
 use tokio::join;
-use std::net::Shutdown;
 
 async fn method(socket: &mut TcpStream) -> Result<(), Box<dyn Error>> {
     // version
@@ -53,7 +50,7 @@ async fn request(socket: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
         dst_port
     );
 
-    let mut stream = TcpStream::connect(dst).await?;
+    let stream = TcpStream::connect(dst).await?;
 
     socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await?;
 
@@ -69,7 +66,7 @@ async fn run(mut socket: TcpStream, mut stream: TcpStream) -> Result<(), Box<dyn
         let mut buffer = Box::new([0; 2000]);
         loop {
             match socket_read.read(buffer.as_mut()).await {
-                Err(e) => break,
+                Err(_) => break,
                 Ok(size) if size == 0 => break,
                 Ok(size) => stream_write.write_all(&buffer[0..size]).await
             };
@@ -82,7 +79,7 @@ async fn run(mut socket: TcpStream, mut stream: TcpStream) -> Result<(), Box<dyn
         let mut buffer = Box::new([0; 2000]);
         loop {
             match stream_read.read(buffer.as_mut()).await {
-                Err(e) => break,
+                Err(_) => break,
                 Ok(size) if size == 0 => break,
                 Ok(size) => socket_write.write_all(&buffer[0..size]).await
             };
