@@ -4,6 +4,20 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
 use std::net::{SocketAddrV4, Ipv4Addr};
 use tokio::join;
+use trust_dns_resolver::TokioAsyncResolver;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
+use std::str;
+
+async fn dns(buf: &[u8], resolver: TokioAsyncResolver) -> Result<Ipv4Addr, Box<dyn Error>> {
+    println!("dns gang");
+    let fqdn = str::from_utf8(buf)?;
+    let ips = resolver.ipv4_lookup(fqdn).await?;
+    let ip = ips.iter().next();
+    match ip {
+        Some(ip) => Ok(*ip),
+        None => Err(Box::new(IOError::new(ErrorKind::Other, "No ip found"))),
+    }
+}
 
 async fn method(socket: &mut TcpStream) -> Result<(), Box<dyn Error>> {
     // version
@@ -26,7 +40,7 @@ async fn method(socket: &mut TcpStream) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn request(socket: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
+async fn request(socket: &mut TcpStream, resolver: TokioAsyncResolver) -> Result<TcpStream, Box<dyn Error>> {
     // ver
     if socket.read_u8().await? != 0x05 {
         return Err(Box::new(IOError::new(ErrorKind::Other, "Version mismatch")));
@@ -38,22 +52,33 @@ async fn request(socket: &mut TcpStream) -> Result<TcpStream, Box<dyn Error>> {
     // rsv
     socket.read_u8().await?;
     // atyp
-    if socket.read_u8().await? != 0x01 {
-        return Err(Box::new(IOError::new(ErrorKind::Other, "Address Type mismatch")));
-    }
-    let mut dst_addr = [0x00; 4];
-    socket.read_exact(&mut dst_addr).await?;
+    let dst_addr = match socket.read_u8().await? {
+        0x01 => {
+            let mut dst_addr = [0x00; 4];
+            socket.read_exact(&mut dst_addr).await?;
+            Ipv4Addr::new(dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3])
+        }
+        0x03 => {
+            let fqdn_size = socket.read_u8().await? as usize;
+            if(fqdn_size > 255) {
+                return Err(Box::new(IOError::new(ErrorKind::Other, "domain too long")))
+            }
+            let mut fqdn: Vec<u8> = vec![0x00; fqdn_size];
+            socket.read_exact(&mut fqdn).await?;
+            dns(fqdn.as_ref(), resolver).await?
+        }
+        _ => return Err(Box::new(IOError::new(ErrorKind::Other, "Address Type mismatch")))
+    };
     let dst_port = socket.read_u16().await?;
 
     let dst = SocketAddrV4::new(
-        Ipv4Addr::new(dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3]),
+        dst_addr,
         dst_port
     );
 
     let stream = TcpStream::connect(dst).await?;
 
     socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).await?;
-
 
     Ok(stream)
 }
@@ -93,9 +118,9 @@ async fn run(mut socket: TcpStream, mut stream: TcpStream) -> Result<(), Box<dyn
     Ok(())
 }
 
-async fn process(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
+async fn process(mut socket: TcpStream, mut resolver: TokioAsyncResolver) -> Result<(), Box<dyn Error>> {
     method(&mut socket).await?;
-    let stream = request(&mut socket).await?;
+    let stream = request(&mut socket, resolver).await?;
     run(socket, stream).await?;
     println!("request finished");
 
@@ -106,14 +131,16 @@ async fn process(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut listener = TcpListener::bind("127.0.0.1:1080").await?;
+    let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).await?;
 
     loop {
         let (socket, _) = listener.accept().await?;
+        let resolver = resolver.clone();
 
         tokio::spawn(async move {
             println!("request");
             // Process each socket concurrently.
-            process(socket).await;
+            process(socket, resolver).await;
         });
     }
     Ok(())
