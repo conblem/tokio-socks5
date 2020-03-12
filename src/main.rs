@@ -60,7 +60,7 @@ async fn request(socket: &mut TcpStream, resolver: TokioAsyncResolver) -> Result
         }
         0x03 => {
             let fqdn_size = socket.read_u8().await? as usize;
-            if(fqdn_size > 255) {
+            if fqdn_size > 255 {
                 return Err(Box::new(IOError::new(ErrorKind::Other, "domain too long")))
             }
             let mut fqdn: Vec<u8> = vec![0x00; fqdn_size];
