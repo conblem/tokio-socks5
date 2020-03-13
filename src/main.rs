@@ -1,15 +1,19 @@
-use tokio;
 use std::error::Error;
+use std::str;
+use std::collections::HashMap;
+use std::net::{SocketAddrV4, Ipv4Addr};
+use std::sync::Arc;
+
+use tokio;
+use tokio::join;
+use tokio::sync::{RwLock, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
-use std::net::{SocketAddrV4, Ipv4Addr};
-use tokio::join;
+
 use trust_dns_resolver::TokioAsyncResolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use std::str;
 
 async fn dns(buf: &[u8], resolver: TokioAsyncResolver) -> Result<Ipv4Addr, Box<dyn Error>> {
-    println!("dns gang");
     let fqdn = str::from_utf8(buf)?;
     let ips = resolver.ipv4_lookup(fqdn).await?;
     let ip = ips.iter().next();
@@ -118,12 +122,21 @@ async fn run(mut socket: TcpStream, mut stream: TcpStream) -> Result<(), Box<dyn
     Ok(())
 }
 
-async fn process(mut socket: TcpStream, mut resolver: TokioAsyncResolver) -> Result<(), Box<dyn Error>> {
+async fn process(mut socket: TcpStream, mut resolver: TokioAsyncResolver, counter: Arc<Mutex<u8>>) -> Result<(), Box<dyn Error>> {
+    {
+        let mut counter = counter.lock().await;
+        *counter += 1;
+        println!("counter start {:?}", counter);
+    }
     method(&mut socket).await?;
     let stream = request(&mut socket, resolver).await?;
     run(socket, stream).await?;
-    println!("request finished");
 
+    {
+        let mut counter = counter.lock().await;
+        *counter -= 1;
+        println!("counter finished {:?}", counter);
+    }
 
     Ok(())
 }
@@ -132,15 +145,16 @@ async fn process(mut socket: TcpStream, mut resolver: TokioAsyncResolver) -> Res
 async fn main() -> Result<(), Box<dyn Error>> {
     let mut listener = TcpListener::bind("127.0.0.1:1080").await?;
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default()).await?;
+    let map: Arc<RwLock<HashMap<String, ()>>> = Arc::new(RwLock::new(HashMap::new()));
+    let counter = Arc::new(Mutex::new(0));
 
     loop {
         let (socket, _) = listener.accept().await?;
         let resolver = resolver.clone();
+        let counter = counter.clone();
 
         tokio::spawn(async move {
-            println!("request");
-            // Process each socket concurrently.
-            process(socket, resolver).await;
+            process(socket, resolver, counter).await;
         });
     }
     Ok(())
