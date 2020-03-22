@@ -160,8 +160,8 @@ impl Socks5Stream {
         let socket = &mut self.socket;
         let resolver = &self.resolver;
 
-        let mut counter = self.counter.clone();
-        let mut counter_two = self.counter.clone();
+        let counter = self.counter.clone();
+        let counter_two = self.counter.clone();
 
         let count_up = tokio::spawn(async move {
             let mut counter = counter.lock().await;
