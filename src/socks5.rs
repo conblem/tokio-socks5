@@ -13,6 +13,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
 use trust_dns_resolver::TokioAsyncResolver;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 
+use tls_parser::tls::parse_tls_plaintext;
+use tls_parser::tls::TlsMessage::Handshake;
+use tls_parser::tls::TlsMessageHandshake::ClientHello;
+use  tls_parser::tls::TlsVersion;
+
+use crate::race::race;
+
 #[allow(dead_code)]
 mod v5 {
     pub const VERSION: u8 = 0x05;
@@ -125,8 +132,53 @@ impl Socks5Stream {
         let (mut socket_read, mut socket_write) = socket.split();
         let (mut stream_read, mut stream_write) = stream.split();
 
+        {
+            let socket_read_peek = async {
+                let mut buf = [1];
+                socket_read.peek(&mut buf).await;
+                true
+            };
+            let stream_read_peek = async {
+                let mut buf = [1];
+                stream_read.peek(&mut buf).await;
+                false
+            };
+            let race_result = race(socket_read_peek, stream_read_peek).await.unwrap_or(false);
+            println!("race {}", race_result);
+
+            //let tls_13_record_header: [u8; 3] = [0x16, 0x03, 0x01];
+            let mut record_header = [0; 5];
+            socket_read.peek(&mut record_header).await;
+            println!("size {:?}", record_header);
+            let handshake_size = match record_header {
+                [0x16, 0x03, 0x01, size @ ..] => u16::from_be_bytes(size) + 5,
+                _ => 0
+            };
+            if handshake_size != 0 {
+                println!("size {}", handshake_size);
+                let mut handshake = vec![0; handshake_size as usize];
+                socket_read.peek(&mut handshake[..]).await;
+                let (_, mut tls) = parse_tls_plaintext(&handshake).unwrap();
+                let is_tls_13= tls.msg.into_iter().find(|msg| {
+                    let msg = match msg {
+                        Handshake(msg) => msg,
+                        _ => return false
+                    };
+                    match msg {
+                        ClientHello(msg) => {
+                            println!("version {:?}", msg.version);
+                            msg.version == TlsVersion::Tls13
+                        },
+                        _ => false
+                    }
+                }).is_some();
+                println!("is tls 1.3 {}", is_tls_13);
+            }
+        }
+
+
         let from_socket = async move {
-            let mut buffer = Box::new([0; 2000]);
+            let mut buffer = vec![0; 1500];
             loop {
                 match socket_read.read(buffer.as_mut()).await {
                     Err(_) => break,
@@ -139,7 +191,7 @@ impl Socks5Stream {
         };
 
         let from_stream = async move {
-            let mut buffer = Box::new([0; 2000]);
+            let mut buffer = vec![0; 1500];
             loop {
                 match stream_read.read(buffer.as_mut()).await {
                     Err(_) => break,
