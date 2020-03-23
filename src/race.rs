@@ -1,6 +1,5 @@
 use std::pin::Pin;
 use std::future::Future;
-use std::borrow::BorrowMut;
 use std::task::{Context, Poll};
 
 struct Racer<'a, B> {

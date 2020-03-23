@@ -10,13 +10,16 @@ mod race;
 mod esni;
 use esni::ESNIKeys;
 
+mod filter;
+use filter::create_esni_filter;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let esni = "/wGWybP7ACQAHQAgshFEgoYR57J8t5JR2EC651y6JQPdpZ0V6Z6q8n128mAAAhMBAQQAAAAAXnNewAAAAABee0fAAAA=";
     let esni_keys = ESNIKeys::parse(esni).unwrap();
 
     println!("start");
-    let mut socks5 = Socks5Listener::new().await?;
+    let mut socks5 = Socks5Listener::new(create_esni_filter).await?;
     socks5.listen().await?;
     Ok(())
 }
