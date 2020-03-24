@@ -17,8 +17,9 @@ use base64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) mod filter;
+mod tls;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ESNIKeys {
     keys: KeyShareEntries,
     ciphersuites: Vec<CipherSuite>,

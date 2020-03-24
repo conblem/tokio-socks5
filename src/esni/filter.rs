@@ -4,6 +4,7 @@ use std::marker::Send;
 use std::option::Option;
 use std::time::Instant;
 use std::sync::Arc;
+use std::net::IpAddr;
 
 use tokio;
 use tokio::net::TcpStream;
@@ -18,11 +19,12 @@ use async_trait::async_trait;
 use ttl_cache::TtlCache;
 
 use crate::socks::filter::{Filter, FilterFactory};
+use super::tls::{is_client_first, parse_if_tls};
 
 
 struct ESNIFilter {
     esni_query: Option<JoinHandle<(Instant, Box<dyn Iterator<Item = TXT> + Send + Unpin>)>>,
-    cache: Arc<RwLock<TtlCache<String, ()>>>
+    cache: Arc<RwLock<TtlCache<IpAddr, ESNIKeys>>>
 }
 
 impl ESNIFilter {
@@ -70,15 +72,30 @@ impl Filter for ESNIFilter {
         self.esni_query = Some(esni_query);
     }
 
-    async fn pre_data(self: &mut Self, _client: &mut TcpStream, _server: &mut TcpStream) {
+    async fn pre_data(self: &mut Self, client: &mut TcpStream, server: &mut TcpStream) {
+        let test = match server.peer_addr() {
+            Ok(peer_addr) => {
+                let peer_ip = peer_addr.ip();
+                self.cache.read().await.get(&peer_ip).map(Clone::clone)
+            },
+            Err(_) => None
+        };
+
+        if !is_client_first(client, server).await {
+            return;
+        }
+        parse_if_tls(client).await;
+
         let (_valid_until, txts) = ESNIFilter::post_dns(&mut self.esni_query).await;
 
-        let txts = txts
+        //test.iter().chain(txts);
+
+        /*let txts = txts
             .flat_map(|txt| txt.txt_data().to_vec())
             .flat_map(ESNIKeys::parse)
             .next();
 
-        println!("txts {:?}", txts)
+        println!("txts {:?}", txts)*/
 
         /*match txts.next() {
             Some(txts) => println!("txts {:?}", txts),
@@ -88,7 +105,7 @@ impl Filter for ESNIFilter {
 }
 
 pub(crate) struct ESNIFilterFactory {
-    cache: Arc<RwLock<TtlCache<String, ()>>>
+    cache: Arc<RwLock<TtlCache<IpAddr, ESNIKeys>>>
 }
 
 impl ESNIFilterFactory {
