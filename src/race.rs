@@ -1,5 +1,5 @@
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 use std::task::{Context, Poll};
 
 struct Racer<'a, B> {
@@ -7,16 +7,19 @@ struct Racer<'a, B> {
     fut2: Pin<Box<dyn Future<Output = B> + Send + 'a>>,
 }
 
-impl <'a, B> Racer<'a, B> {
-    fn new(fut1: impl Future<Output = B> + Send + 'a, fut2: impl Future<Output = B> + Send + 'a) -> Self {
+impl<'a, B> Racer<'a, B> {
+    fn new(
+        fut1: impl Future<Output = B> + Send + 'a,
+        fut2: impl Future<Output = B> + Send + 'a,
+    ) -> Self {
         Racer {
             fut1: Box::pin(fut1),
-            fut2: Box::pin(fut2)
+            fut2: Box::pin(fut2),
         }
     }
 }
 
-impl <B> Future for Racer<'_, B> {
+impl<B> Future for Racer<'_, B> {
     type Output = Option<B>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -31,12 +34,15 @@ impl <B> Future for Racer<'_, B> {
             (Poll::Pending, Poll::Pending) => Poll::Pending,
             (Poll::Ready(res), Poll::Pending) => Poll::Ready(Some(res)),
             (Poll::Pending, Poll::Ready(res)) => Poll::Ready(Some(res)),
-            (Poll::Ready(_), Poll::Ready(_)) => Poll::Ready(None)
+            (Poll::Ready(_), Poll::Ready(_)) => Poll::Ready(None),
         }
     }
 }
 
-pub(crate) async fn race<B>(fut1: impl Future<Output = B> + Send, fut2: impl Future<Output = B> + Send) -> Option<B> {
+pub(crate) async fn race<B>(
+    fut1: impl Future<Output = B> + Send,
+    fut2: impl Future<Output = B> + Send,
+) -> Option<B> {
     let racer = Racer::new(fut1, fut2);
     racer.await
 }

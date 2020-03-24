@@ -1,14 +1,14 @@
-use std::vec::Vec;
 use std::io;
 use std::io::BufRead;
 use std::io::Read;
 use std::time::Duration;
+use std::vec::Vec;
 
+use rustls::internal::msgs::codec::{Codec, Reader};
 use rustls::internal::msgs::enums::CipherSuite;
-use rustls::internal::msgs::codec::{Reader, Codec};
 use rustls::internal::msgs::handshake::KeyShareEntries;
 
-use byteorder::{ReadBytesExt, BigEndian};
+use byteorder::{BigEndian, ReadBytesExt};
 
 use ring::digest::digest;
 use ring::digest::SHA256;
@@ -16,6 +16,7 @@ use ring::digest::SHA256;
 use base64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug)]
 pub struct ESNIKeys {
     pub(crate) keys: KeyShareEntries,
     ciphersuites: Vec<CipherSuite>,
@@ -56,7 +57,7 @@ impl ESNIKeys {
 
     fn keyshare_entries(esni: &mut &[u8]) -> io::Result<KeyShareEntries> {
         if esni.len() < 2 {
-            return Err(io::Error::new(io::ErrorKind::Other, "to short"))
+            return Err(io::Error::new(io::ErrorKind::Other, "to short"));
         }
 
         let mut keyshare_entry_size = [0; 2];
@@ -78,8 +79,13 @@ impl ESNIKeys {
         let mut ciphersuites = vec![];
         while reader.any_left() {
             match CipherSuite::read(&mut reader) {
-                Some(cs) => { ciphersuites.push(cs) },
-                None => return Err(io::Error::new(io::ErrorKind::Other, "could not read ciphersuite"))
+                Some(cs) => ciphersuites.push(cs),
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "could not read ciphersuite",
+                    ))
+                }
             }
         }
         Ok(ciphersuites)
@@ -89,29 +95,30 @@ impl ESNIKeys {
         let now = SystemTime::now();
 
         let not_before = Duration::from_secs(esni.read_u64::<BigEndian>()?);
-        let not_before = UNIX_EPOCH.checked_add(not_before).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "not before wrong")
-        })?;
+        let not_before = UNIX_EPOCH
+            .checked_add(not_before)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "not before wrong"))?;
 
         let not_after = Duration::from_secs(esni.read_u64::<BigEndian>()?);
-        let not_after = UNIX_EPOCH.checked_add(not_after).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "not after wrong")
-        })?;
+        let not_after = UNIX_EPOCH
+            .checked_add(not_after)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "not after wrong"))?;
 
         if now < not_before {
-            return Err(io::Error::new(io::ErrorKind::Other, "to early"))
+            return Err(io::Error::new(io::ErrorKind::Other, "to early"));
         }
         if now > not_after {
-            return Err(io::Error::new(io::ErrorKind::Other, "to late"))
+            return Err(io::Error::new(io::ErrorKind::Other, "to late"));
         }
 
         Ok(())
     }
 
-    pub(crate) fn parse(txt: &str) -> Option<Self> {
+    pub(crate) fn parse<T: AsRef<[u8]>>(txt: T) -> Option<Self> {
+        println!("start parse");
         let esni = match base64::decode(txt).ok() {
             Some(txt) => txt,
-            None => return None
+            None => return None,
         };
         let mut esni = &esni[..];
 
@@ -127,17 +134,17 @@ impl ESNIKeys {
 
         let keys = match ESNIKeys::keyshare_entries(&mut esni) {
             Err(_) => return None,
-            Ok(k) => k
+            Ok(k) => k,
         };
 
         let ciphersuites = match ESNIKeys::ciphersuites(&mut esni) {
             Err(_) => return None,
-            Ok(cs) => cs
+            Ok(cs) => cs,
         };
 
         let padded_length = match esni.read_u16::<BigEndian>() {
             Err(_) => return None,
-            Ok(p) => p
+            Ok(p) => p,
         };
 
         if ESNIKeys::time(esni).is_err() {
@@ -147,7 +154,7 @@ impl ESNIKeys {
         Some(ESNIKeys {
             keys,
             ciphersuites,
-            padded_length
+            padded_length,
         })
     }
 }
