@@ -16,9 +16,11 @@ use ring::digest::SHA256;
 use base64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub(crate) mod filter;
+
 #[derive(Debug)]
-pub struct ESNIKeys {
-    pub(crate) keys: KeyShareEntries,
+pub(crate) struct ESNIKeys {
+    keys: KeyShareEntries,
     ciphersuites: Vec<CipherSuite>,
     padded_length: u16,
 }

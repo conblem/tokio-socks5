@@ -1,21 +1,15 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::str;
+use std::error::Error;
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+use tokio::sync::Mutex;
+use tokio::net::TcpStream;
+use tokio::join;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
+use trust_dns_resolver::TokioAsyncResolver;
 use std::sync::Arc;
 
-use tokio;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
-use tokio::join;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, RwLock};
-
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
-
-use crate::filter::{Filter, FilterFactory};
-use std::marker::PhantomData;
+use crate::socks::filter::Filter;
 
 #[allow(dead_code)]
 mod v5 {
@@ -40,17 +34,14 @@ mod v5 {
     pub const REPLY_ATYP_UNSUPPORTED: u8 = 0x08;
 }
 
-struct Socks5Stream<A> {
-    socket: TcpStream,
-    resolver: TokioAsyncResolver,
-    domains: Arc<RwLock<HashMap<String, ()>>>,
-    counter: Arc<Mutex<u8>>,
-    filter: A,
+pub(super) struct SocksStream {
+    pub(super) socket: TcpStream,
+    pub(super) resolver: TokioAsyncResolver,
+    pub(super) counter: Arc<Mutex<u8>>,
+    pub(super) filter: Box<dyn Filter + Send>,
 }
 
-impl<A> Socks5Stream<A>
-where
-    A: Filter + Send,
+impl SocksStream
 {
     async fn resolve_method(socket: &mut TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
         // version
@@ -104,7 +95,7 @@ where
     async fn resolve_domainame(
         socket: &mut TcpStream,
         resolver: &TokioAsyncResolver,
-        filter: &mut A,
+        filter: &mut Box<dyn Filter + Send>,
     ) -> Result<Ipv4Addr, Box<dyn Error + Send + Sync>> {
         let fqdn_size = socket.read_u8().await? as usize;
         if fqdn_size > 255 {
@@ -181,10 +172,10 @@ where
         Ok(())
     }
 
-    async fn run(self: &mut Self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub(super) async fn run(self: &mut Self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let socket = &mut self.socket;
         let resolver = &self.resolver;
-        let mut filter = &mut self.filter;
+        let filter = &mut self.filter;
 
         let counter = self.counter.clone();
         let counter_two = self.counter.clone();
@@ -195,17 +186,17 @@ where
             println!("connection open {}", counter);
         });
 
-        Socks5Stream::<A>::resolve_method(socket).await?;
-        let dst_addr = match Socks5Stream::<A>::resolve_atyp(socket).await? {
-            v5::ATYP_IPV4 => Socks5Stream::<A>::resolve_ipv4(socket).await?,
+        SocksStream::resolve_method(socket).await?;
+        let dst_addr = match SocksStream::resolve_atyp(socket).await? {
+            v5::ATYP_IPV4 => SocksStream::resolve_ipv4(socket).await?,
             v5::ATYP_DOMAIN => {
-                Socks5Stream::<A>::resolve_domainame(socket, resolver, filter).await?
+                SocksStream::resolve_domainame(socket, resolver, filter).await?
             }
             _ => return Err(Box::new(IOError::new(ErrorKind::Other, "invalid atyp"))),
         };
-        let mut stream = Socks5Stream::<A>::resolve_socket(socket, dst_addr).await?;
+        let mut stream = SocksStream::resolve_socket(socket, dst_addr).await?;
         filter.pre_data(socket, &mut stream).await;
-        Socks5Stream::<A>::pipe(socket, stream).await?;
+        SocksStream::pipe(socket, stream).await?;
 
         let count_down = tokio::spawn(async move {
             let mut counter = counter_two.lock().await;
@@ -217,63 +208,5 @@ where
         count_down.await?;
 
         Ok(())
-    }
-}
-
-pub struct Socks5Listener<F, A>
-where
-    A: Filter + Send + 'static,
-    F: FilterFactory<A>,
-{
-    listener: TcpListener,
-    resolver: TokioAsyncResolver,
-    domains: Arc<RwLock<HashMap<String, ()>>>,
-    counter: Arc<Mutex<u8>>,
-    filter_factory: F,
-    phantom: PhantomData<&'static A>,
-}
-
-impl<F, A> Socks5Listener<F, A>
-where
-    A: Filter + Send + 'static,
-    F: FilterFactory<A>,
-{
-    pub(crate) async fn new(filter_factory: F) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let listener = TcpListener::bind("127.0.0.1:1080").await?;
-        let resolver =
-            TokioAsyncResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default())
-                .await?;
-        let domains: Arc<RwLock<HashMap<String, ()>>> = Arc::new(RwLock::new(HashMap::new()));
-        let counter = Arc::new(Mutex::new(0));
-
-        Ok(Socks5Listener {
-            listener,
-            resolver,
-            domains,
-            counter,
-            filter_factory,
-            phantom: PhantomData,
-        })
-    }
-
-    pub(crate) async fn listen(self: &mut Self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        loop {
-            let (socket, _) = self.listener.accept().await?;
-            let resolver = self.resolver.clone();
-            let domains = self.domains.clone();
-            let counter = self.counter.clone();
-            let filter = self.filter_factory.create().await;
-
-            tokio::spawn(async move {
-                let mut stream = Socks5Stream {
-                    socket,
-                    resolver,
-                    domains,
-                    counter,
-                    filter,
-                };
-                stream.run().await;
-            });
-        }
     }
 }

@@ -1,12 +1,9 @@
-use std::future::Future;
 use std::iter;
 use std::iter::Iterator;
 use std::marker::Send;
 use std::option::Option;
-use std::slice::Iter;
 use std::time::Instant;
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use tokio;
 use tokio::net::TcpStream;
@@ -18,24 +15,14 @@ use trust_dns_resolver::TokioAsyncResolver;
 
 use crate::esni::ESNIKeys;
 use async_trait::async_trait;
+use ttl_cache::TtlCache;
 
-#[async_trait]
-pub trait FilterFactory<F>
-where
-    F: Filter + Send,
-{
-    async fn create(self: &mut Self) -> F;
-}
+use crate::socks::filter::{Filter, FilterFactory};
 
-#[async_trait]
-pub trait Filter {
-    async fn pre_dns(self: &mut Self, fqdn: &str, resolver: &TokioAsyncResolver);
-    async fn pre_data(self: &mut Self, client: &mut TcpStream, server: &mut TcpStream);
-}
 
-pub(crate) struct ESNIFilter {
+struct ESNIFilter {
     esni_query: Option<JoinHandle<(Instant, Box<dyn Iterator<Item = TXT> + Send + Unpin>)>>,
-    cache: Arc<RwLock<HashMap<String, ()>>>
+    cache: Arc<RwLock<TtlCache<String, ()>>>
 }
 
 impl ESNIFilter {
@@ -71,7 +58,7 @@ impl Filter for ESNIFilter {
                         Box::new(txts.into_iter()) as Box<dyn Iterator<Item = TXT> + Send + Unpin>;
                     (valid_until, txts)
                 }
-                Err(err) => {
+                Err(_) => {
                     let valid_until = Instant::now();
                     let txts =
                         Box::new(iter::empty()) as Box<dyn Iterator<Item = TXT> + Send + Unpin>;
@@ -83,8 +70,8 @@ impl Filter for ESNIFilter {
         self.esni_query = Some(esni_query);
     }
 
-    async fn pre_data(self: &mut Self, client: &mut TcpStream, server: &mut TcpStream) {
-        let (valid_until, mut txts) = ESNIFilter::post_dns(&mut self.esni_query).await;
+    async fn pre_data(self: &mut Self, _client: &mut TcpStream, _server: &mut TcpStream) {
+        let (_valid_until, txts) = ESNIFilter::post_dns(&mut self.esni_query).await;
 
         let txts = txts
             .flat_map(|txt| txt.txt_data().to_vec())
@@ -101,21 +88,21 @@ impl Filter for ESNIFilter {
 }
 
 pub(crate) struct ESNIFilterFactory {
-    cache: Arc<RwLock<HashMap<String, ()>>>
+    cache: Arc<RwLock<TtlCache<String, ()>>>
 }
 
 impl ESNIFilterFactory {
     pub(crate) fn new() -> Self {
         ESNIFilterFactory {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(TtlCache::new(1000))),
         }
     }
 }
 
 #[async_trait]
-impl FilterFactory<ESNIFilter> for ESNIFilterFactory {
-    async fn create(self: &mut Self) -> ESNIFilter {
+impl FilterFactory for ESNIFilterFactory {
+    async fn create(self: &mut Self) -> Box<dyn Filter + Send> {
         let cache = self.cache.clone();
-        ESNIFilter { esni_query: None, cache }
+        Box::new(ESNIFilter { esni_query: None, cache })
     }
 }
