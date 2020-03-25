@@ -42,7 +42,7 @@ impl<B> Future for Racer<'_, B> {
 pub(crate) async fn race<B>(
     fut1: impl Future<Output = B> + Send,
     fut2: impl Future<Output = B> + Send,
-) -> Option<B> {
-    let racer = Racer::new(fut1, fut2);
-    racer.await
+    default: B,
+) -> B {
+    Racer::new(fut1, fut2).await.unwrap_or(default)
 }

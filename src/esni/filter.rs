@@ -10,6 +10,7 @@ use tokio;
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tokio::sync::RwLock;
+use tokio::io::AsyncWriteExt;
 
 use trust_dns_proto::rr::rdata::txt::TXT;
 use trust_dns_resolver::TokioAsyncResolver;
@@ -20,6 +21,10 @@ use ttl_cache::TtlCache;
 
 use crate::socks::filter::{Filter, FilterFactory};
 use super::tls::{is_client_first, parse_if_tls};
+
+use cookie_factory::{gen_simple, GenError};
+use tls_parser::TlsPlaintext;
+use tls_parser::serialize::gen_tls_plaintext;
 
 
 struct ESNIFilter {
@@ -84,9 +89,19 @@ impl Filter for ESNIFilter {
         if !is_client_first(client, server).await {
             return;
         }
-        parse_if_tls(client).await;
+        println!("client is first");
+        let mut handshake = vec![];
+        let tls_plaintext = match parse_if_tls(client, &mut handshake).await {
+            Some(tls_plaintext) => tls_plaintext,
+            None => return
+        };
 
-        let (_valid_until, txts) = ESNIFilter::post_dns(&mut self.esni_query).await;
+        let mut test = vec![0; 1000];
+        let size = gen_tls_plaintext((&mut test, 0), &tls_plaintext).unwrap().1;
+        println!("size {}", size);
+        client.write(&test[..size]).await;
+
+        //let (_valid_until, txts) = ESNIFilter::post_dns(&mut self.esni_query).await;
 
         //test.iter().chain(txts);
 
