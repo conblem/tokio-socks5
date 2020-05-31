@@ -1,5 +1,5 @@
-use tokio::net::TcpStream;
 use tokio::io::AsyncReadExt;
+use tokio::net::tcp::ReadHalf;
 
 use crate::race::race;
 
@@ -11,15 +11,17 @@ use tls_parser::tls_extensions::{TlsExtension, parse_tls_extensions};
 use tls_parser::tls_extensions::TlsExtension::SupportedVersions;
 use std::slice::Iter;
 
-pub(super) async fn is_client_first(client: &mut TcpStream, server: &mut TcpStream) -> bool {
+use byteorder::{BigEndian, WriteBytesExt};
+
+pub(super) async fn is_client_first(client_read: &mut ReadHalf<'_>, server_read: &mut ReadHalf<'_>) -> bool {
     let client_peek = async {
         let mut buf = [1];
-        client.peek(&mut buf).await;
+        client_read.peek(&mut buf).await;
         true
     };
     let server_peek = async {
         let mut buf = [1];
-        server.peek(&mut buf).await;
+        server_read.peek(&mut buf).await;
         false
     };
     race(client_peek, server_peek, false).await
@@ -33,7 +35,7 @@ fn find_tls_13_extension<'a>(ext: &'a TlsExtension<'a>) -> bool {
     };
 
 
-    match tls_versions.find(|tls_version| *tls_version == &TlsVersion::Tls13) {
+    match tls_versions.find(|tls_version| **tls_version == TlsVersion::Tls13) {
         Some(_) => true,
         None => false
     }
@@ -67,19 +69,17 @@ fn find_tls_13_handshake<'a>(msg: &'a TlsMessage<'a>) -> bool {
     true
 }
 
-pub(super) async fn parse_if_tls<'a>(client: &mut TcpStream, handshake: &'a mut Vec<u8>) -> Option<TlsPlaintext<'a>> {
+pub(super) async fn parse_if_tls<'a>(client_read: &mut ReadHalf<'_>, handshake: &'a mut Vec<u8>) -> Option<TlsPlaintext<'a>> {
     let mut record_header = [0; 5];
-    client.peek(&mut record_header).await;
+    client_read.peek(&mut record_header).await;
 
     let handshake_size = match record_header {
         [0x16, 0x03, 0x01, size @ ..] => u16::from_be_bytes(size) + 5,
         _ => return None
     } as usize;
 
-    println!("size before {}", handshake_size);
-
     handshake.resize(handshake_size, 0);
-    client.peek(&mut handshake[..handshake_size]).await;
+    client_read.peek(&mut handshake[..handshake_size]).await;
     let mut tls = parse_tls_plaintext(handshake).unwrap().1;
     let msg = &mut tls.msg;
     let is_tls13 = msg.iter().find(|msg| find_tls_13_handshake(msg));
@@ -88,9 +88,8 @@ pub(super) async fn parse_if_tls<'a>(client: &mut TcpStream, handshake: &'a mut 
     }
 
     let mut noop = vec![0; handshake_size];
-    client.read_exact(&mut noop[..handshake_size]).await;
-
-    println!("is tls gang");
+    client_read.read_exact(&mut noop[..handshake_size]).await;
+    //println!("{:?}", &noop[..handshake_size]);
 
     Some(tls)
 }
