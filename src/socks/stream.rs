@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::socks::filter::Filter;
 use tokio::net::tcp::{ReadHalf, WriteHalf};
+use std::io::BufRead;
 
 #[allow(dead_code)]
 mod v5 {
@@ -44,47 +45,47 @@ pub(super) struct SocksStream {
 
 impl SocksStream
 {
-    async fn resolve_method(client_read: &mut ReadHalf<'_>, client_write: &mut WriteHalf<'_>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn resolve_method(client: &mut TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
         // version
-        if client_read.read_u8().await? != v5::VERSION {
+        if client.read_u8().await? != v5::VERSION {
             return Ok(());
         }
-        let method_size = client_read.read_u8().await? as usize;
+        let method_size = client.read_u8().await? as usize;
         if method_size < 0x01 || method_size > 0xFF {
             return Ok(());
         }
         let mut method: Vec<u8> = vec![0x00; method_size];
-        client_read.read_exact(&mut method).await?;
+        client.read_exact(&mut method).await?;
         if method[0] != 0x00 {
-            client_write.write_all(&[0x05, 0xFF]).await?;
+            client.write_all(&[0x05, 0xFF]).await?;
             return Ok(());
         }
 
-        client_write.write_all(&[0x05, 0x00]).await?;
+        client.write_all(&[0x05, 0x00]).await?;
 
         Ok(())
     }
 
-    async fn resolve_atyp(client_read: &mut ReadHalf<'_>) -> Result<u8, Box<dyn Error + Send + Sync>> {
+    async fn resolve_atyp(client: &mut TcpStream) -> Result<u8, Box<dyn Error + Send + Sync>> {
         // ver
-        if client_read.read_u8().await? != 0x05 {
+        if client.read_u8().await? != 0x05 {
             return Err(Box::new(IOError::new(ErrorKind::Other, "Version mismatch")));
         }
         // cmd
-        if client_read.read_u8().await? != 0x01 {
+        if client.read_u8().await? != 0x01 {
             return Err(Box::new(IOError::new(ErrorKind::Other, "Command mismatch")));
         }
         // rsv
-        client_read.read_u8().await?;
+        client.read_u8().await?;
         // atyp
-        Ok(client_read.read_u8().await?)
+        Ok(client.read_u8().await?)
     }
 
     async fn resolve_ipv4(
-        client_read: &mut ReadHalf<'_>,
+        client: &mut TcpStream,
     ) -> Result<Ipv4Addr, Box<dyn Error + Send + Sync>> {
         let mut dst_addr = [0x00; 4];
-        client_read.read_exact(&mut dst_addr).await?;
+        client.read_exact(&mut dst_addr).await?;
         Ok(Ipv4Addr::new(
             dst_addr[0],
             dst_addr[1],
@@ -94,17 +95,17 @@ impl SocksStream
     }
 
     async fn resolve_domainame(
-        client_read: &mut ReadHalf<'_>,
+        client: &mut TcpStream,
         resolver: &TokioAsyncResolver,
         filter: &mut Box<dyn Filter + Send>,
     ) -> Result<Ipv4Addr, Box<dyn Error + Send + Sync>> {
-        let fqdn_size = client_read.read_u8().await? as usize;
+        let fqdn_size = client.read_u8().await? as usize;
         if fqdn_size > 255 {
             return Err(Box::new(IOError::new(ErrorKind::Other, "domain too long")));
         }
 
         let mut buf: Vec<u8> = vec![0x00; fqdn_size];
-        client_read.read_exact(&mut buf).await?;
+        client.read_exact(&mut buf).await?;
 
         let fqdn = str::from_utf8(&buf)?;
 
@@ -123,17 +124,16 @@ impl SocksStream
     }
 
     async fn resolve_server(
-        client_read: &mut ReadHalf<'_>,
-        client_write: &mut WriteHalf<'_>,
+        client: &mut TcpStream,
         dst_addr: Ipv4Addr,
     ) -> Result<TcpStream, Box<dyn Error + Send + Sync>> {
-        let dst_port = client_read.read_u16().await?;
+        let dst_port = client.read_u16().await?;
 
         let dst = SocketAddrV4::new(dst_addr, dst_port);
 
         let server = TcpStream::connect(dst).await?;
 
-        client_write
+        client
             .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
             .await?;
 
@@ -141,12 +141,11 @@ impl SocksStream
     }
 
     async fn pipe(
-        client_read: &mut ReadHalf<'_>,
-        client_write: &mut WriteHalf<'_>,
-        server_read: &mut ReadHalf<'_>,
-        server_write: &mut WriteHalf<'_>
+        client: &mut TcpStream,
+        server: &mut TcpStream,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        println!("start pipe");
+        let (mut client_read, mut client_write) = client.split();
+        let (mut server_read, mut server_write) = server.split();
 
         let from_client = async move {
             let mut buffer = vec![0; 1500];
@@ -158,7 +157,7 @@ impl SocksStream
                 };
             }
             // add error handling
-            AsyncWriteExt::shutdown(server_write).await;
+            AsyncWriteExt::shutdown(&mut server_write).await;
         };
 
         let from_server = async move {
@@ -171,7 +170,7 @@ impl SocksStream
                 };
             }
             // add error handling
-            AsyncWriteExt::shutdown(client_write).await;
+            AsyncWriteExt::shutdown(&mut client_write).await;
         };
 
         join!(from_server, from_client);
@@ -179,7 +178,6 @@ impl SocksStream
     }
 
     pub(super) async fn run(self: &mut Self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let (client_read, client_write) = &mut self.socket.split();
         let resolver = &self.resolver;
         let filter = &mut self.filter;
 
@@ -192,19 +190,20 @@ impl SocksStream
             println!("connection open {}", counter);
         });
 
-        SocksStream::resolve_method(client_read, client_write).await?;
-        let dst_addr = match SocksStream::resolve_atyp(client_read).await? {
-            v5::ATYP_IPV4 => SocksStream::resolve_ipv4(client_read).await?,
+        let client = &mut self.socket;
+
+        SocksStream::resolve_method(client).await?;
+        let dst_addr = match SocksStream::resolve_atyp(client).await? {
+            v5::ATYP_IPV4 => SocksStream::resolve_ipv4(client).await?,
             v5::ATYP_DOMAIN => {
-                SocksStream::resolve_domainame(client_read, resolver, filter).await?
+                SocksStream::resolve_domainame(client, resolver, filter).await?
             }
             _ => return Err(Box::new(IOError::new(ErrorKind::Other, "invalid atyp"))),
         };
 
-        let mut server = SocksStream::resolve_server(client_read, client_write, dst_addr).await?;
-        let (mut server_read, mut server_write) = server.split();
-        filter.pre_data(client_read, client_write, &mut server_read, &mut server_write).await;
-        SocksStream::pipe(client_read, client_write, &mut server_read, &mut server_write).await?;
+        let mut server = SocksStream::resolve_server(client, dst_addr).await?;
+        filter.pre_data(client, &mut server).await;
+        SocksStream::pipe(client, &mut server).await?;
 
         let count_down = tokio::spawn(async move {
             let mut counter = counter_two.lock().await;

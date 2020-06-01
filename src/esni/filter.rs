@@ -79,7 +79,7 @@ impl Filter for ESNIFilter {
         self.esni_query = Some(esni_query);
     }
 
-    async fn pre_data(self: &mut Self, client_read: &mut ReadHalf<'_>, client_write: &mut WriteHalf<'_>, server_read: &mut ReadHalf<'_>, server_write: &mut WriteHalf<'_>) {
+    async fn pre_data(self: &mut Self, client: &mut TcpStream, server: &mut TcpStream) {
         /*let test = match server_read.peer_addr() {
             Ok(peer_addr) => {
                 let peer_ip = peer_addr.ip();
@@ -88,11 +88,11 @@ impl Filter for ESNIFilter {
             Err(_) => None
         };*/
 
-        if !is_client_first(client_read, server_read).await {
+        if !is_client_first(client, server).await {
             return;
         }
         let mut handshake = vec![];
-        let mut tls_plaintext = match parse_if_tls(client_read, &mut handshake).await {
+        let mut tls_plaintext = match parse_if_tls(client, &mut handshake).await {
             Some(tls_plaintext) => tls_plaintext,
             None => return
         };
@@ -103,7 +103,7 @@ impl Filter for ESNIFilter {
         let (res, size) = gen_tls_plaintext((test_test, 0), &tls_plaintext).unwrap();
         println!("size {}", size);
         //println!("{:?}", &test[..size]);
-        let written = server_write.write(&res[..size]).await;
+        let written = server.write(&res[..size]).await;
         println!("written2 {:?}", written);
 
         //let (_valid_until, txts) = ESNIFilter::post_dns(&mut self.esni_query).await;

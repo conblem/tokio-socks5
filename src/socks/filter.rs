@@ -1,7 +1,7 @@
 use std::marker::Send;
 
 use tokio;
-use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::net::TcpStream;
 
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub(crate) trait Filter {
     async fn pre_dns(self: &mut Self, fqdn: &str, resolver: &TokioAsyncResolver);
-    async fn pre_data(self: &mut Self, client_read: &mut ReadHalf<'_>, client_write: &mut WriteHalf<'_>, server_read: &mut ReadHalf<'_>, server_write: &mut WriteHalf<'_>);
+    async fn pre_data(self: &mut Self, client: &mut TcpStream, server: &mut TcpStream);
 }
 
 #[async_trait]
