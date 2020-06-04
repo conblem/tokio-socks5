@@ -133,6 +133,7 @@ impl SocksStream
 
         let server = TcpStream::connect(dst).await?;
 
+        // todo: explain what dis is
         client
             .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
             .await?;
