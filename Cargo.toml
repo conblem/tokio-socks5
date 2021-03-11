@@ -4,8 +4,8 @@ version = "0.1.0"
 authors = ["conblem <mail@conblem.me>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 tokio = { version = "1.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "io-util", "sync"] }
-trust-dns-resolver = { version = "0.20", default-features = false, features = [ "dns-over-rustls", "tokio-runtime"] }
+trust-dns-resolver = { version = "0.20", default-features = false, features = ["dns-over-rustls", "tokio-runtime", ] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.2", features = ["parking_lot"] }
