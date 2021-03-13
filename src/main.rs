@@ -10,8 +10,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     async {
         let mut socks5 = Socks5Listener::new()?;
-        socks5.listen().await?;
-        Ok(())
+        socks5.listen().await
     }
     .instrument(info_span!("main"))
     .await
