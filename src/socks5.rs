@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::ops::AddAssign;
 use std::str;
 use tokio;
-use tokio::io::{copy, AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
+use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt, Error as IOError, ErrorKind};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::sync::watch;
@@ -202,14 +202,7 @@ async fn pipe(
     client: &mut TcpStream,
     server: &mut TcpStream,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (mut client_read, mut client_write) = client.split();
-    let (mut server_read, mut server_write) = server.split();
-
-    let from_client = copy(&mut client_read, &mut server_write);
-
-    let from_server = copy(&mut server_read, &mut client_write);
-
-    try_join!(from_client, from_server)?;
+    copy_bidirectional(client, server).await?;
 
     Ok(())
 }
